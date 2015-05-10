@@ -7,6 +7,8 @@
 #include <list>
 using namespace std;
 
+const TVMMemoryPoolID VM_MEMORY_POOL_ID_SYSTEM = 0;
+
 extern "C" {
 ///////////////////////// TCB Class Definition ///////////////////////////
 class TCB
@@ -20,6 +22,7 @@ public:
         entry_point(entry_point),
         entry_params(entry_params),
         ticks_remaining(ticks_remaining) {
+            // need to use mem alloc for base, not new
             stack_base = new uint8_t[stack_size];
             // call_back_result = -1;
         }
@@ -308,6 +311,7 @@ TVMStatus VMThreadCreate(TVMThreadEntry entry, void *param, TVMMemorySize memsiz
     }
 
     else {
+        // NEED TO ALLOCATE SPACE FOR BASE OF THREADS FROM THE MAIN MEMPOOL, NOT USING NEW (look at constructor)
         TCB *new_thread = new TCB(tid, VM_THREAD_STATE_DEAD, prio, memsize, entry, param, 0);
         *(new_thread->id) = (TVMThreadID)thread_vector.size();
         thread_vector.push_back(new_thread);
