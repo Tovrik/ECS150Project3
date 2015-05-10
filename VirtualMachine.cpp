@@ -606,19 +606,21 @@ TVMStatus VMMutexRelease(TVMMutexID mutex) {
     return VM_STATUS_SUCCESS;
 }
 
+
 /////////////////////// VMMemoryPool Functions ///////////////////////////
-
-
 TVMStatus VMMemoryPoolCreate(void *base, TVMMemorySize size, TVMMemoryPoolIDRef memory) {
     MachineSuspendSignals(sigstate);
     if(base == NULL || memory == NULL || size == 0) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
-    current_mem_pool = new MemoryPool(size, *memory, (uint8_t*)base);
-    mem_pool_vector.push_back(current_mem_pool);
-    MachineResumeSignals(sigstate);
-    return VM_STATUS_SUCCESS;
+    else {
+        current_mem_pool = new MemoryPool(size, *memory, (uint8_t*)base);
+        mem_pool_vector.push_back(current_mem_pool);
+        // memory = current_mem_pool;
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_SUCCESS;
+    }
 }
 
 TVMStatus VMMemoryPoolDelete(TVMMemoryPoolID memory) {
@@ -631,10 +633,12 @@ TVMStatus VMMemoryPoolDelete(TVMMemoryPoolID memory) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_STATE;
     }
-    delete mem_pool_vector[memory];
-    mem_pool_vector[memory] = NULL;
-    MachineResumeSignals(sigstate);
-    return VM_STATUS_SUCCESS;
+    else {
+        delete mem_pool_vector[memory];
+        mem_pool_vector[memory] = NULL;
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_SUCCESS;
+    }
 }
 
 TVMStatus VMMemoryPoolQuery(TVMMemoryPoolID memory, TVMMemorySizeRef bytesleft) {
@@ -643,29 +647,42 @@ TVMStatus VMMemoryPoolQuery(TVMMemoryPoolID memory, TVMMemorySizeRef bytesleft) 
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_ID;
     }
-    bytesleft = mem_pool_vector[memory]->free_space;
-    MachineResumeSignals(sigstate);
-    return VM_STATUS_SUCCESS;
+    else {
+        bytesleft = mem_pool_vector[memory]->free_space;
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_SUCCESS;
+    }
 }
 
 TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void **pointer) {
+    MachineSuspendSignals(sigstate);
     if(mem_pool_vector[memory] == NULL || size == 0 || pointer == NULL) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
+    else if (0) { // If the memory pool does not have sufficient memory to allocate the array of size bytes, VM_STATUS_ERROR_INSUFFICIENT_RESOURCES is returned.
+        
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_ERROR_INSUFFICIENT_RESOURCES;
+    }
+    else {
 
-
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_SUCCESS;
+    }
 }
 
 TVMStatus VMMemoryPoolDeallocate(TVMMemoryPoolID memory, void *pointer) {
+    MachineSuspendSignals(sigstate);
     if(mem_pool_vector[memory] == NULL || pointer == NULL) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
-    mem_pool_vector[memory]->alloc_list.erase(pointer);
-    deallocate(memory, pointer, mem_pool_vector[memory]->free_list);
+    else {
+        mem_pool_vector[memory]->alloc_list.erase(pointer);
+        deallocate(memory, pointer, mem_pool_vector[memory]->free_list);
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_SUCCESS;
+    }
 }
-
-
-
 } // end extern C
