@@ -7,6 +7,8 @@
 
 using namespace std;
 
+const TVMMemoryPoolID VM_MEMORY_POOL_ID_SYSTEM = 0;
+
 extern "C" {
 ///////////////////////// TCB Class Definition ///////////////////////////
 class TCB
@@ -20,6 +22,7 @@ public:
         entry_point(entry_point),
         entry_params(entry_params),
         ticks_remaining(ticks_remaining) {
+            // need to use mem alloc for base, not new
             stack_base = new uint8_t[stack_size];
             // call_back_result = -1;
         }
@@ -218,11 +221,12 @@ void MachineFileCallback(void* param, int result) {
 }
 
 ///////////////////////// VMThread Functions ///////////////////////////
-TVMStatus VMStart(int tickms, int machinetickms, int argc, char *argv[]) { //The time in milliseconds of the virtual machine tick is specified by the tickms parameter, the machine responsiveness is specified by the machinetickms.
+TVMStatus VMStart(int tickms, TVMMemorySize heapsize, int machinetickms, TVMMemorySize sharedsize, int argc, char *argv[]) { //The time in milliseconds of the virtual machine tick is specified by the tickms parameter, the machine responsiveness is specified by the machinetickms.
     typedef void (*TVMMainEntry)(int argc, char* argv[]);
     TVMMainEntry VMMain;
     VMMain = VMLoadModule(argv[0]);
     if (VMMain != NULL) {
+        // will need to pass in sharesize here vvvvv
         MachineInitialize(machinetickms); //The timeout parameter specifies the number of milliseconds the machine will sleep between checking for requests.
         MachineRequestAlarm(tickms*1000, timerDecrement, NULL); // NULL b/c passing data through global vars
         MachineEnableSignals();
@@ -234,6 +238,11 @@ TVMStatus VMStart(int tickms, int machinetickms, int argc, char *argv[]) { //The
         idle_thread = new TCB((unsigned int *)1, VM_THREAD_STATE_DEAD, VM_THREAD_PRIORITY_IDLE, 0x100000, NULL, NULL, 0);
         idle_thread->thread_state = VM_THREAD_STATE_READY;
         MachineContextCreate(&(idle_thread->machine_context), idleEntry, NULL, idle_thread->stack_base, idle_thread->stack_size);
+        // VM_MEMORY_POOL_SYSTEM
+        uint8_t* base = new uint8_t[heapsize];
+        MemoryPool* main_pool = new MemoryPool(heapsize, VM_MEMORY_POOL_ID_SYSTEM, base);
+        mem_pool_vector.push_back(main_pool);
+        // call VMMain
         VMMain(argc, argv);
         return VM_STATUS_SUCCESS;
     }
@@ -269,6 +278,7 @@ TVMStatus VMThreadCreate(TVMThreadEntry entry, void *param, TVMMemorySize memsiz
     }
 
     else {
+        // NEED TO ALLOCATE SPACE FOR BASE OF THREADS FROM THE MAIN MEMPOOL, NOT USING NEW (look at constructor)
         TCB *new_thread = new TCB(tid, VM_THREAD_STATE_DEAD, prio, memsize, entry, param, 0);
         *(new_thread->id) = (TVMThreadID)thread_vector.size();
         thread_vector.push_back(new_thread);
