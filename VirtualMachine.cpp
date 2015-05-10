@@ -4,7 +4,7 @@
 #include "Machine.h"
 #include <vector>
 #include <deque>
-
+#include <list>
 using namespace std;
 
 extern "C" {
@@ -53,11 +53,32 @@ class Mutex{
 };
 
 
+///////////////////////// MemoryPool Class definition ///////////////////////////
+class MemoryPool{
+    public:
+        MemoryPool(TVMMemorySize memory_pool_size, TVMMemoryPoolID memory_pool_id, uint8_t base):
+            memory_pool_size(memory_pool_size),
+            memory_pool_id(memory_pool_id),
+            // memory_size_ref(memory_size_ref),
+            base(&base),
+            free_space(memory_pool_size) {}
+
+    TVMMemorySize memory_pool_size;
+    TVMMemoryPoolID memory_pool_id;
+    // TVMMemorySizeRef memory_size_ref;
+    list<uint8_t> free_list;
+    list<uint8_t> alloc_list;
+    uint8_t *base;
+    int free_space;
+
+};
+
 ///////////////////////// Globals ///////////////////////////
 #define VM_THREAD_PRIORITY_IDLE                  ((TVMThreadPriority)0x00)
 
 vector<TCB*> thread_vector;
 vector<Mutex*> mutex_vector;
+vector<MemoryPool*> mem_pool_vector;
 deque<TCB*> low_priority_queue;
 deque<TCB*> normal_priority_queue;
 deque<TCB*> high_priority_queue;
@@ -65,6 +86,7 @@ vector<TCB*> sleep_vector;
 TCB*        idle_thread;
 TCB*        current_thread;
 Mutex*      current_mutex;
+MemoryPool* current_mem_pool;
 
 volatile int timer;
 TMachineSignalStateRef sigstate;
@@ -76,6 +98,17 @@ TVMMainEntry VMLoadModule(const char *module);
 void actual_removal(TCB* thread, deque<TCB*> &Q) {
     for (deque<TCB*>::iterator it=Q.begin(); it != Q.end(); ++it) {
         if (*it == thread) {
+            Q.erase(it);
+            break;
+        }
+    }
+}
+
+void deallocate(TVMMemoryPoolID memory, void *pointer, list<uint8_t> &Q) {
+
+    for (list<uint8_t>::iterator it=Q.begin(); it != Q.end(); ++it) {
+        if(*it > *pointer) {
+            it--;
             Q.erase(it);
             break;
         }
@@ -368,8 +401,6 @@ TVMStatus VMFileClose(int filedescriptor) {
     }
 }
 
-
-
 TVMStatus VMFileOpen(const char *filename, int flags, int mode, int *filedescriptor) {
     MachineSuspendSignals(sigstate);
     if (filename == NULL || filedescriptor == NULL) {
@@ -391,7 +422,6 @@ TVMStatus VMFileOpen(const char *filename, int flags, int mode, int *filedescrip
         }
     }
 }
-
 
 TVMStatus VMFileWrite(int filedescriptor, void *data, int *length) {
     MachineSuspendSignals(sigstate);
@@ -498,7 +528,6 @@ TVMStatus VMMutexQuery(TVMMutexID mutex, TVMThreadIDRef ownerref) {
     }
     MachineResumeSignals(sigstate);
     return VM_STATUS_SUCCESS;
-
 }
 
 TVMStatus VMMutexAcquire(TVMMutexID mutex, TVMTick timeout) {
@@ -539,8 +568,6 @@ TVMStatus VMMutexAcquire(TVMMutexID mutex, TVMTick timeout) {
     return VM_STATUS_SUCCESS;
 }
 
-
-
 TVMStatus VMMutexRelease(TVMMutexID mutex) {
     MachineSuspendSignals(sigstate);
     if(mutex_vector[mutex] == NULL || mutex >= mutex_vector.size()) {
@@ -567,8 +594,68 @@ TVMStatus VMMutexRelease(TVMMutexID mutex) {
     }
     MachineResumeSignals(sigstate);
     return VM_STATUS_SUCCESS;
+}
+
+/////////////////////// VMMemoryPool Functions ///////////////////////////
+
+
+TVMStatus VMMemoryPoolCreate(void *base, TVMMemorySize size, TVMMemoryPoolIDRef memory) {
+    MachineSuspendSignals(sigstate);
+    if(base == NULL || memory == NULL || size == 0) {
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_ERROR_INVALID_PARAMETER;
+    }
+    current_mem_pool = new MemoryPool(size, *memory, (uint8_t*)base);
+    mem_pool_vector.push_back(current_mem_pool);
+    MachineResumeSignals(sigstate);
+    return VM_STATUS_SUCCESS;
+}
+
+TVMStatus VMMemoryPoolDelete(TVMMemoryPoolID memory) {
+    MachineSuspendSignals(sigstate);
+    if(mem_pool_vector[memory] == NULL) {
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_ERROR_INVALID_ID;
+    }
+    else if(!mem_pool_vector[memory]->alloc_list.empty()) {
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_ERROR_INVALID_STATE;
+    }
+    delete mem_pool_vector[memory];
+    mem_pool_vector[memory] = NULL;
+    MachineResumeSignals(sigstate);
+    return VM_STATUS_SUCCESS;
+}
+
+TVMStatus VMMemoryPoolQuery(TVMMemoryPoolID memory, TVMMemorySizeRef bytesleft) {
+    MachineSuspendSignals(sigstate);
+    if(mem_pool_vector[memory] == NULL || bytesleft == NULL) {
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_ERROR_INVALID_ID;
+    }
+    bytesleft = mem_pool_vector[memory]->free_space;
+    MachineResumeSignals(sigstate);
+    return VM_STATUS_SUCCESS;
+}
+
+TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void **pointer) {
+    if(mem_pool_vector[memory] == NULL || size == 0 || pointer == NULL) {
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_ERROR_INVALID_PARAMETER;
+    }
+
 
 }
+
+TVMStatus VMMemoryPoolDeallocate(TVMMemoryPoolID memory, void *pointer) {
+    if(mem_pool_vector[memory] == NULL || pointer == NULL) {
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_ERROR_INVALID_PARAMETER;
+    }
+    mem_pool_vector[memory]->alloc_list.erase(pointer);
+    deallocate(memory, pointer, mem_pool_vector[memory]->free_list);
+}
+
 
 
 } // end extern C
