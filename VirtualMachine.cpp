@@ -622,10 +622,12 @@ TVMStatus VMMemoryPoolCreate(void *base, TVMMemorySize size, TVMMemoryPoolIDRef 
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
-    current_mem_pool = new MemoryPool(size, *memory, (uint8_t*)base);
-    mem_pool_vector.push_back(current_mem_pool);
-    MachineResumeSignals(sigstate);
-    return VM_STATUS_SUCCESS;
+    else {
+        current_mem_pool = new MemoryPool(size, *memory, (uint8_t*)base);
+        mem_pool_vector.push_back(current_mem_pool);
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_SUCCESS;
+    }
 }
 
 TVMStatus VMMemoryPoolDelete(TVMMemoryPoolID memory) {
@@ -638,10 +640,12 @@ TVMStatus VMMemoryPoolDelete(TVMMemoryPoolID memory) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_STATE;
     }
-    delete mem_pool_vector[memory];
-    mem_pool_vector[memory] = NULL;
-    MachineResumeSignals(sigstate);
-    return VM_STATUS_SUCCESS;
+    else {
+        delete mem_pool_vector[memory];
+        mem_pool_vector[memory] = NULL;
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_SUCCESS;
+    }
 }
 
 TVMStatus VMMemoryPoolQuery(TVMMemoryPoolID memory, TVMMemorySizeRef bytesleft) {
@@ -650,9 +654,11 @@ TVMStatus VMMemoryPoolQuery(TVMMemoryPoolID memory, TVMMemorySizeRef bytesleft) 
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_ID;
     }
-    bytesleft = (unsigned int*)mem_pool_vector[memory]->free_space;
-    MachineResumeSignals(sigstate);
-    return VM_STATUS_SUCCESS;
+    else {
+        bytesleft = (unsigned int*)mem_pool_vector[memory]->free_space;
+        MachineResumeSignals(sigstate);
+        return VM_STATUS_SUCCESS;
+    }
 }
 
 TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void **pointer) {
@@ -660,18 +666,20 @@ TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void 
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
-    mem_chunk *new_chunk = new mem_chunk();
-    new_chunk->base = (uint8_t *)pointer;
-    new_chunk->length = size;
-    list<mem_chunk>::iterator it;
-    for (it= mem_pool_vector[memory]->alloc_list.begin(); it !=mem_pool_vector[memory]->alloc_list.end(); ++it) {
-        if(it->base == *pointer) {
-            break;
+    else {
+        mem_chunk *new_chunk = new mem_chunk();
+        new_chunk->base = (uint8_t *)pointer;
+        new_chunk->length = size;
+        list<mem_chunk>::iterator it;
+        for (it= mem_pool_vector[memory]->alloc_list.begin(); it !=mem_pool_vector[memory]->alloc_list.end(); ++it) {
+            if(it->base == *pointer) {
+                break;
+            }
         }
-    }
-    mem_pool_vector[memory]->alloc_list.insert(it, *new_chunk);
+        mem_pool_vector[memory]->alloc_list.insert(it, *new_chunk);
 
-    mem_pool_vector[memory]->free_space -= size;
+        mem_pool_vector[memory]->free_space -= size;
+    }
 }
 
 TVMStatus VMMemoryPoolDeallocate(TVMMemoryPoolID memory, void *pointer) {
@@ -679,15 +687,17 @@ TVMStatus VMMemoryPoolDeallocate(TVMMemoryPoolID memory, void *pointer) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
-
-    list<mem_chunk>::iterator it;
-    for (it= mem_pool_vector[memory]->alloc_list.begin(); it !=mem_pool_vector[memory]->alloc_list.end(); ++it) {
-        if(it->base == pointer) {
-            break;
+    else {
+        list<mem_chunk>::iterator it;
+        for (it= mem_pool_vector[memory]->alloc_list.begin(); it !=mem_pool_vector[memory]->alloc_list.end(); ++it) {
+            if(it->base == pointer) {
+                break;
+            }
         }
+
+        mem_pool_vector[memory]->alloc_list.erase(it);
+        deallocate(memory, pointer, mem_pool_vector[memory]->free_list);
     }
-    mem_pool_vector[memory]->alloc_list.erase(it);
-    deallocate(memory, pointer, mem_pool_vector[memory]->free_list);
 }
 
 
