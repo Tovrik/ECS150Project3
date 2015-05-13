@@ -660,36 +660,41 @@ TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void 
     }
     else {
         mem_chunk *new_chunk = new mem_chunk();
-        new_chunk->base = (uint8_t *)pointer;
         // round size up to next 64 byte chunk (eqn given in discussion)
         new_chunk->length = (size + 0x3F) & (~0x3F);
-        list<mem_chunk*>::iterator it;
+        list<mem_chunk*>::iterator it_free;
         // traverse free_list to find if space available
-        for (it= mem_pool_vector[memory]->free_list.begin(); it !=mem_pool_vector[memory]->free_list.end(); ++it) {
-            if((*it)->length > new_chunk->length) {
+        for (it_free= mem_pool_vector[memory]->free_list.begin(); it_free !=mem_pool_vector[memory]->free_list.end(); ++it_free) {
+            if((*it_free)->length > new_chunk->length) {
                 break;
             }
         }
-        // if it reached end of free list then we know there isn't enough space for the new_chunk
-        if (it == mem_pool_vector[memory]->free_list.end()) {
+        // if it_free reached end of free list then we know there isn't enough space for the new_chunk
+        if (it_free == mem_pool_vector[memory]->free_list.end()) {
             MachineResumeSignals(sigstate);
             return VM_STATUS_ERROR_INSUFFICIENT_RESOURCES;
         }
         else {
-            mem_chunk* free_chunk_available_to_insert_into = *it;
+            list<mem_chunk*>::iterator it_alloc;
             // traverse alloc_list to find where to insert
-            for (it= mem_pool_vector[memory]->alloc_list.begin(); it !=mem_pool_vector[memory]->alloc_list.end(); ++it) {
-                if((*it)->base > free_chunk_available_to_insert_into->base) {
+            for (it_alloc= mem_pool_vector[memory]->alloc_list.begin(); it_alloc !=mem_pool_vector[memory]->alloc_list.end(); ++it_alloc) {
+                if((*it_alloc)->base > (*it_free)->base) {
                     break;
                 }
             }
+            new_chunk->base = (*it_free)->base;
+            *pointer = new_chunk->base;
             // insert new_chunk into correct spot
-            mem_pool_vector[memory]->alloc_list.insert(it, new_chunk);
+            mem_pool_vector[memory]->alloc_list.insert(it_alloc, new_chunk);
             // update amount of free_space
             mem_pool_vector[memory]->free_space -= new_chunk->length;
             // update free_list
-            // FIND WHERE TO REMOVE SPACE IN FREE LIST AND ADD A NEW NODE WITH IT'S BASE = NEW_CHUNK->BASE + NEW_CHUNK_LENGTH
-
+            (*it_free)->base += new_chunk->length;
+            (*it_free)->length -= new_chunk->length;
+            // if after updating the free list, the length is 0 then we know we used exactly the amount of free space in that chunk (no fragmentation) so we delete that node in the free_list
+            if ((*it_free)->length == 0) {
+                mem_pool_vector[memory]->free_list.erase(it_free);
+            }
 
             MachineResumeSignals(sigstate);
             return VM_STATUS_SUCCESS;
