@@ -76,10 +76,10 @@ class MemoryPool{
     TVMMemorySize memory_pool_size;
     TVMMemoryPoolID memory_pool_id;
     // TVMMemorySizeRef memory_size_ref;
-    list<mem_chunk> free_list;
-    list<mem_chunk> alloc_list;
+    list<mem_chunk*> free_list;
+    list<mem_chunk*> alloc_list;
     uint8_t *base;
-    int free_space;
+    unsigned int free_space;
 
 };
 
@@ -115,15 +115,6 @@ void actual_removal(TCB* thread, deque<TCB*> &Q) {
     }
 }
 
-void deallocate(TVMMemoryPoolID memory, void *pointer, list<mem_chunk> &Q) {
-
-    // for (list<uint8_t>::iterator it=Q.begin(); it != Q.end(); ++it) {
-    //     if(*it.base + *it.length == (int)pointer) {
-    //         Q.erase(it);
-    //         break;
-    //     }
-    // }
-}
 
 void determine_queue_and_push(TCB* thread) {
     if (thread->thread_priority == VM_THREAD_PRIORITY_LOW) {
@@ -279,9 +270,9 @@ TVMStatus VMStart(int tickms, TVMMemorySize heapsize, int machinetickms, TVMMemo
         idle_thread->thread_state = VM_THREAD_STATE_READY;
         MachineContextCreate(&(idle_thread->machine_context), idleEntry, NULL, idle_thread->stack_base, idle_thread->stack_size);
         // VM_MEMORY_POOL_SYSTEM
-        uint8_t* base = new uint8_t[heapsize];
-        MemoryPool* main_pool = new MemoryPool(heapsize, VM_MEMORY_POOL_ID_SYSTEM, base);
-        mem_pool_vector.push_back(main_pool);
+        // uint8_t* base = new uint8_t[heapsize];
+        // MemoryPool* main_pool = new MemoryPool(heapsize, VM_MEMORY_POOL_ID_SYSTEM, base);
+        // mem_pool_vector.push_back(main_pool);
         // call VMMain
         VMMain(argc, argv);
         return VM_STATUS_SUCCESS;
@@ -655,13 +646,14 @@ TVMStatus VMMemoryPoolQuery(TVMMemoryPoolID memory, TVMMemorySizeRef bytesleft) 
         return VM_STATUS_ERROR_INVALID_ID;
     }
     else {
-        bytesleft = (unsigned int*)mem_pool_vector[memory]->free_space;
+        bytesleft = &(mem_pool_vector[memory]->free_space);
         MachineResumeSignals(sigstate);
         return VM_STATUS_SUCCESS;
     }
 }
 
 TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void **pointer) {
+    MachineSuspendSignals(sigstate);
     if(mem_pool_vector[memory] == NULL || size == 0 || pointer == NULL) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_PARAMETER;
@@ -669,36 +661,97 @@ TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void 
     else {
         mem_chunk *new_chunk = new mem_chunk();
         new_chunk->base = (uint8_t *)pointer;
-        new_chunk->length = size;
-        list<mem_chunk>::iterator it;
-        for (it= mem_pool_vector[memory]->alloc_list.begin(); it !=mem_pool_vector[memory]->alloc_list.end(); ++it) {
-            if(it->base == *pointer) {
+        // round size up to next 64 byte chunk (eqn given in discussion)
+        new_chunk->length = (size + 0x3F) & (~0x3F);
+        list<mem_chunk*>::iterator it;
+        // traverse free_list to find if space available
+        for (it= mem_pool_vector[memory]->free_list.begin(); it !=mem_pool_vector[memory]->free_list.end(); ++it) {
+            if((*it)->length > new_chunk->length) {
                 break;
             }
         }
-        mem_pool_vector[memory]->alloc_list.insert(it, *new_chunk);
+        // if it reached end of free list then we know there isn't enough space for the new_chunk
+        if (it == mem_pool_vector[memory]->free_list.end()) {
+            MachineResumeSignals(sigstate);
+            return VM_STATUS_ERROR_INSUFFICIENT_RESOURCES;
+        }
+        else {
+            mem_chunk* free_chunk_available_to_insert_into = *it;
+            // traverse alloc_list to find where to insert
+            for (it= mem_pool_vector[memory]->alloc_list.begin(); it !=mem_pool_vector[memory]->alloc_list.end(); ++it) {
+                if((*it)->base > free_chunk_available_to_insert_into->base) {
+                    break;
+                }
+            }
+            // insert new_chunk into correct spot
+            mem_pool_vector[memory]->alloc_list.insert(it, new_chunk);
+            // update amount of free_space
+            mem_pool_vector[memory]->free_space -= new_chunk->length;
+            // update free_list
+            // FIND WHERE TO REMOVE SPACE IN FREE LIST AND ADD A NEW NODE WITH IT'S BASE = NEW_CHUNK->BASE + NEW_CHUNK_LENGTH
 
-        mem_pool_vector[memory]->free_space -= size;
+
+            MachineResumeSignals(sigstate);
+            return VM_STATUS_SUCCESS;
+        }
     }
 }
 
+void add_to_free_list(MemoryPool *actual_mem_pool, mem_chunk* free_mem_chunk) {
+    // find position to insert into free_list
+    list<mem_chunk*>::iterator it;
+    for (it = actual_mem_pool->alloc_list.begin(); it !=actual_mem_pool->alloc_list.end(); ++it) {
+        if((*it)->base > free_mem_chunk->base) {
+            break;
+        }
+    }
+    actual_mem_pool->free_list.insert(it, free_mem_chunk);      // it = current. after insert it = next     _ v _   --> _ _ v _
+    --it;                                                       // it = current                             _ v _ _
+    if ((*it)->base + (*it)->length == (*(++it))->base) {       // it = current. after ++it, it = next      _ v _ _ --> _ _ v _
+        --it;                                                   // it = current                             _ v _ _
+        (*it)->length += (*(++it))->length;                     // it = current. after ++it, it = next      _ v _ _ --> _ _ v _
+        actual_mem_pool->free_list.erase(it);                   // it = next                                _ _ v
+        --it;                                                   // it = current                             _ v _
+    }
+    --it;                                                       // it = prev                                v _ _
+    if ((*it)->base + (*it)->length == (*(++it))->base) {       // it = prev. after ++it, it = current      v _ _   --> _ v _ 
+        --it;                                                   // it = prev.                               v _ _
+        (*it)->length += (*(++it))->length;                     // it = prev. after ++it, it = current      v _ _   --> _ v _ 
+        actual_mem_pool->free_list.erase(it);                   // it = next                                _ v
+    }
+}
+
+
 TVMStatus VMMemoryPoolDeallocate(TVMMemoryPoolID memory, void *pointer) {
+    MachineSuspendSignals(sigstate);
     if(mem_pool_vector[memory] == NULL || pointer == NULL) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
     else {
-        list<mem_chunk>::iterator it;
-        for (it= mem_pool_vector[memory]->alloc_list.begin(); it !=mem_pool_vector[memory]->alloc_list.end(); ++it) {
-            if(it->base == pointer) {
+        MemoryPool* actual_mem_pool = mem_pool_vector[memory];
+        list<mem_chunk*>::iterator it;
+        for (it = actual_mem_pool->alloc_list.begin(); it !=actual_mem_pool->alloc_list.end(); ++it) {
+            if((*it)->base == pointer) {
                 break;
             }
         }
-
-        mem_pool_vector[memory]->alloc_list.erase(it);
-        deallocate(memory, pointer, mem_pool_vector[memory]->free_list);
+        // if pointer doesn't point to something in the alloc list
+        if (it == actual_mem_pool->alloc_list.end()) {
+            MachineResumeSignals(sigstate);
+            return VM_STATUS_ERROR_INVALID_PARAMETER;
+        }
+        else {
+            // store chunk in temp to be added to free list and remove from alloc list
+            mem_chunk* dealloced_mem_chunk = *it;
+            actual_mem_pool->alloc_list.erase(it);
+            add_to_free_list(actual_mem_pool, dealloced_mem_chunk);
+            MachineResumeSignals(sigstate);
+            return VM_STATUS_SUCCESS;
+        }
     }
 }
+
 
 
 
