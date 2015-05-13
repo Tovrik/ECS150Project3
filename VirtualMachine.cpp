@@ -66,7 +66,7 @@ typedef struct mem_chunk {
 
 class MemoryPool{
     public:
-        MemoryPool(TVMMemorySize memory_pool_size, TVMMemoryPoolID memory_pool_id, uint8_t *base):
+        MemoryPool(TVMMemorySize memory_pool_size, TVMMemoryPoolIDRef memory_pool_id, uint8_t *base):
             memory_pool_size(memory_pool_size),
             memory_pool_id(memory_pool_id),
             // memory_size_ref(memory_size_ref),
@@ -74,7 +74,7 @@ class MemoryPool{
             free_space(memory_pool_size) {}
 
     TVMMemorySize memory_pool_size;
-    TVMMemoryPoolID memory_pool_id;
+    TVMMemoryPoolIDRef memory_pool_id;
     // TVMMemorySizeRef memory_size_ref;
     list<mem_chunk*> free_list;
     list<mem_chunk*> alloc_list;
@@ -605,8 +605,6 @@ TVMStatus VMMutexRelease(TVMMutexID mutex) {
 }
 
 /////////////////////// VMMemoryPool Functions ///////////////////////////
-
-
 TVMStatus VMMemoryPoolCreate(void *base, TVMMemorySize size, TVMMemoryPoolIDRef memory) {
     MachineSuspendSignals(sigstate);
     if(base == NULL || memory == NULL || size == 0) {
@@ -614,8 +612,9 @@ TVMStatus VMMemoryPoolCreate(void *base, TVMMemorySize size, TVMMemoryPoolIDRef 
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
     else {
-        current_mem_pool = new MemoryPool(size, *memory, (uint8_t*)base);
-        mem_pool_vector.push_back(current_mem_pool);
+        MemoryPool* new_mem_pool = new MemoryPool(size, memory, (uint8_t*)base);
+        *(new_mem_pool)->memory_pool_id = (TVMMemoryPoolID)mem_pool_vector.size();
+        mem_pool_vector.push_back(new_mem_pool);
         MachineResumeSignals(sigstate);
         return VM_STATUS_SUCCESS;
     }
@@ -625,7 +624,7 @@ TVMStatus VMMemoryPoolDelete(TVMMemoryPoolID memory) {
     MachineSuspendSignals(sigstate);
     if(mem_pool_vector[memory] == NULL) {
         MachineResumeSignals(sigstate);
-        return VM_STATUS_ERROR_INVALID_ID;
+        return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
     else if(!mem_pool_vector[memory]->alloc_list.empty()) {
         MachineResumeSignals(sigstate);
@@ -646,7 +645,7 @@ TVMStatus VMMemoryPoolQuery(TVMMemoryPoolID memory, TVMMemorySizeRef bytesleft) 
         return VM_STATUS_ERROR_INVALID_ID;
     }
     else {
-        bytesleft = &(mem_pool_vector[memory]->free_space);
+        *bytesleft = mem_pool_vector[memory]->free_space;
         MachineResumeSignals(sigstate);
         return VM_STATUS_SUCCESS;
     }
@@ -751,6 +750,8 @@ TVMStatus VMMemoryPoolDeallocate(TVMMemoryPoolID memory, void *pointer) {
             mem_chunk* dealloced_mem_chunk = *it;
             actual_mem_pool->alloc_list.erase(it);
             add_to_free_list(actual_mem_pool, dealloced_mem_chunk);
+            // update amount of free space
+            actual_mem_pool->free_space += dealloced_mem_chunk->length;
             MachineResumeSignals(sigstate);
             return VM_STATUS_SUCCESS;
         }
