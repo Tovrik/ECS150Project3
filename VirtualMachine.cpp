@@ -717,36 +717,48 @@ TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void 
 }
 
 void add_to_free_list(MemoryPool *actual_mem_pool, mem_chunk* free_mem_chunk) {
+    // if free_list is empty, then just put the chunk in and no need to check if it should merge with other chunks
+    // if (actual_mem_pool->free_list.empty()) {
+    //     // printf("free list is empty\n");
+    //     actual_mem_pool->free_list.push_back(free_mem_chunk);
+    //     printf("%d\n", actual_mem_pool->free_list.size());
+    //     return;
+    // }
     // find position to insert into free_list
     list<mem_chunk*>::iterator it = actual_mem_pool->free_list.begin();
-    if (actual_mem_pool->free_list.empty()) {
-        // printf("free list is empty\n");
-        // it--;
-    }
     for (it; it !=actual_mem_pool->free_list.end(); ++it) {
         if((*it)->base >= free_mem_chunk->base) {
             break;
         }
     }
     actual_mem_pool->free_list.insert(it, free_mem_chunk);          // it = current. after insert it = next     _ v _   --> _ _ v _
-    if (it != actual_mem_pool->free_list.begin()) {
+    // merge with chunk after in memory
+    if (it != actual_mem_pool->free_list.end()) {
         --it;                                                       // it = current                             _ v _ _
         if ((*it)->base + (*it)->length == (*(++it))->base) {       // it = current. after ++it, it = next      _ v _ _ --> _ _ v _
             --it;                                                   // it = current                             _ v _ _
-            (*it)->length += (*(++it))->length;                     // it = current. after ++it, it = next      _ v _ _ --> _ _ v _
+            (*it)->length = (*it)->length + (*(++it))->length;                     // it = current. after ++it, it = next      _ v _ _ --> _ _ v _
             actual_mem_pool->free_list.erase(it);                   // it = next                                _ _ v
             --it;                                                   // it = current                             _ v _
         }
     }
-    if (it != actual_mem_pool->free_list.end()) {
+    // need to decrement because end points to the "past-the-end" element
+    else {
+        --it;
+    }
+    // merge with chunk before in memory
+    if (it != actual_mem_pool->free_list.begin()) {
         --it;                                                       // it = prev                                v _ _
         if ((*it)->base + (*it)->length == (*(++it))->base) {       // it = prev. after ++it, it = current      v _ _   --> _ v _ 
             --it;                                                   // it = prev.                               v _ _
-            (*it)->length += (*(++it))->length;                     // it = prev. after ++it, it = current      v _ _   --> _ v _ 
+            // printf("%x %x\n", (*it)->base, (*it)->length);
+            (*it)->length = (*it)->length + (*(++it))->length;      // it = prev. after ++it, it = current      v _ _   --> _ v _ 
             actual_mem_pool->free_list.erase(it);                   // it = next                                _ v
+            // it--;
+            // printf("%x %x\n", (*it)->base, (*it)->length);
         }
     }
-    printf("%d\n", actual_mem_pool->free_list.size());
+    // printf("%d\n", actual_mem_pool->free_list.size());
 }
 
 
