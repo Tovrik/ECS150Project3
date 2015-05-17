@@ -75,12 +75,12 @@ class MemoryPool {
             // memory_size_ref(memory_size_ref),
             base(base),
             free_space(memory_pool_size) {
-                printf("%d\n", memory_pool_id);
+                // printf("%d\n", memory_pool_id);
                 mem_chunk *free_chunk = new mem_chunk();
                 free_chunk->base = base;
                 free_chunk->length = memory_pool_size;
                 free_list.push_back(free_chunk);
-
+                // printf("%p\n", base);
             }
 
     TVMMemorySize memory_pool_size;
@@ -257,7 +257,7 @@ void MachineFileCallback(void* param, int result) {
     temp->thread_state = VM_THREAD_STATE_READY;
     determine_queue_and_push(temp);
     temp->call_back_result = result;
-    printf("%d\n", result);
+    // printf("%d\n", result);
     if ((current_thread->thread_state == VM_THREAD_STATE_RUNNING && current_thread->thread_priority < temp->thread_priority) || current_thread->thread_state != VM_THREAD_STATE_RUNNING) {
         scheduler();
     }
@@ -271,7 +271,7 @@ TVMStatus VMStart(int tickms, TVMMemorySize heapsize, int machinetickms, TVMMemo
     if (VMMain != NULL) {
         sharedsize = (sharedsize + 0xFFF) & (~0xFFF);
         void *shared_mem_base = MachineInitialize(machinetickms, sharedsize); //The timeout parameter specifies the number of milliseconds the machine will sleep between checking for requests.
-        printf("%p\n",shared_mem_base);
+        // printf("%p\n",shared_mem_base);
         MachineRequestAlarm(tickms*1000, timerDecrement, NULL); // NULL b/c passing data through global vars
         MachineEnableSignals();
         // VM_MEMORY_POOL_SYSTEM
@@ -283,7 +283,9 @@ TVMStatus VMStart(int tickms, TVMMemorySize heapsize, int machinetickms, TVMMemo
         // printf("made main pool, making shared\n");
         // VMMemoryPoolCreate(shared_mem_base, sharedsize, (unsigned int *)1);
         MemoryPool* shared_mem_pool = new MemoryPool(sharedsize, 1, (uint8_t*)shared_mem_base);
-        mem_pool_vector.push_back(main_pool);
+        // printf("%p\n",shared_mem_pool->base);
+        mem_pool_vector.push_back(shared_mem_pool);
+        // printf("%p\n",mem_pool_vector[1]->base);
         // create main_thread
         // printf("made shared, making main thread\n");
         TCB* main_thread = new TCB((unsigned int *)0, VM_THREAD_STATE_RUNNING, VM_THREAD_PRIORITY_NORMAL, 0, NULL, NULL, 0);
@@ -298,6 +300,7 @@ TVMStatus VMStart(int tickms, TVMMemorySize heapsize, int machinetickms, TVMMemo
         MachineContextCreate(&(idle_thread->machine_context), idleEntry, NULL, idle_thread->stack_base, idle_thread->stack_size);
         // call VMMain
         // printf("made idle\n");
+        // printf("%p\n",shared_mem_base);
         VMMain(argc, argv);
         return VM_STATUS_SUCCESS;
     }
@@ -465,6 +468,7 @@ TVMStatus VMFileOpen(const char *filename, int flags, int mode, int *filedescrip
 // 7. In the woken thread.  Deallocate the shared memory location.
 TVMStatus VMFileWrite(int filedescriptor, void *data, int *length) {
     MachineSuspendSignals(sigstate);
+    // printf("%p, %p\n",mem_pool_vector[0]->base, mem_pool_vector[1]->base);
     if (data == NULL || length == NULL) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_PARAMETER;
@@ -472,10 +476,13 @@ TVMStatus VMFileWrite(int filedescriptor, void *data, int *length) {
     // TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void **pointer) {
     void* addr;
     VMMemoryPoolAllocate(1, (TVMMemorySize)(*length), &addr);
-    printf("%p\n",addr);
+    if(VM_STATUS_SUCCESS != VMMemoryPoolAllocate(1, 256, (void **)&addr)){
+        VMPrintError("Failed to allocate memory pool\n");
+    }   
+    // printf("%p\n",addr);
     // void * memcpy ( void * destination, const void * source, size_t num );
     memcpy(addr, data, *length);
-    printf("%d\n", *length);
+    // printf("%d\n", *length);
     MachineFileWrite(filedescriptor, addr, *length, MachineFileCallback, current_thread);
     current_thread->thread_state = VM_THREAD_STATE_WAITING;
     scheduler();
