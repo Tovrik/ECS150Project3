@@ -75,7 +75,7 @@ class MemoryPool {
             // memory_size_ref(memory_size_ref),
             base(base),
             free_space(memory_pool_size) {
-                // printf("%d\n", memory_pool_id);
+                // `("%d\n", memory_pool_id);
                 mem_chunk *free_chunk = new mem_chunk();
                 free_chunk->base = base;
                 free_chunk->length = memory_pool_size;
@@ -271,7 +271,7 @@ TVMStatus VMStart(int tickms, TVMMemorySize heapsize, int machinetickms, TVMMemo
     if (VMMain != NULL) {
         sharedsize = (sharedsize + 0xFFF) & (~0xFFF);
         void *shared_mem_base = MachineInitialize(machinetickms, sharedsize); //The timeout parameter specifies the number of milliseconds the machine will sleep between checking for requests.
-        // printf("%p\n",shared_mem_base);
+        // printf("shared_mem_base: %p\n",shared_mem_base);
         MachineRequestAlarm(tickms*1000, timerDecrement, NULL); // NULL b/c passing data through global vars
         MachineEnableSignals();
         // VM_MEMORY_POOL_SYSTEM
@@ -300,7 +300,7 @@ TVMStatus VMStart(int tickms, TVMMemorySize heapsize, int machinetickms, TVMMemo
         MachineContextCreate(&(idle_thread->machine_context), idleEntry, NULL, idle_thread->stack_base, idle_thread->stack_size);
         // call VMMain
         // printf("made idle\n");
-        // printf("%p\n",shared_mem_base);
+        // printf("shared_mem_base: %p\n",shared_mem_base);
         VMMain(argc, argv);
         return VM_STATUS_SUCCESS;
     }
@@ -468,28 +468,42 @@ TVMStatus VMFileOpen(const char *filename, int flags, int mode, int *filedescrip
 // 7. In the woken thread.  Deallocate the shared memory location.
 TVMStatus VMFileWrite(int filedescriptor, void *data, int *length) {
     MachineSuspendSignals(sigstate);
-    // printf("%p, %p\n",mem_pool_vector[0]->base, mem_pool_vector[1]->base);
+    // printf("system_base: %p, shared_base: %p\n",mem_pool_vector[0]->base, mem_pool_vector[1]->base);
     if (data == NULL || length == NULL) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
     // TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void **pointer) {
     void* addr;
-    VMMemoryPoolAllocate(1, (TVMMemorySize)(*length), &addr);
-    if(VM_STATUS_SUCCESS != VMMemoryPoolAllocate(1, 256, (void **)&addr)){
-        VMPrintError("Failed to allocate memory pool\n");
-    }   
-    // printf("%p\n",addr);
+    if (*length > 512) {
+        VMMemoryPoolAllocate(1, 512, &addr);
+    }
+    else {
+        VMMemoryPoolAllocate(1, (TVMMemorySize)(*length), &addr);    
+    }
+    // printf("writing_chunk_base: %p\n",addr);
     // void * memcpy ( void * destination, const void * source, size_t num );
-    memcpy(addr, data, *length);
-    // printf("%d\n", *length);
-    MachineFileWrite(filedescriptor, addr, *length, MachineFileCallback, current_thread);
     current_thread->thread_state = VM_THREAD_STATE_WAITING;
+    int temp_length = *length;
+    while (temp_length > 0) {
+        if (temp_length > 512) {
+            memcpy(addr, data, 512);
+            MachineFileWrite(filedescriptor, addr, 512, MachineFileCallback, current_thread);
+        }
+        else {
+            memcpy(addr, data, temp_length);
+            MachineFileWrite(filedescriptor, addr, temp_length, MachineFileCallback, current_thread);
+        }
+        temp_length -= 512;
+        data += 512;
+        // printf("%d\n", *length);
+    }
     scheduler();
     // TVMStatus VMMemoryPoolDeallocate(TVMMemoryPoolID memory, void *pointer) {
     VMMemoryPoolDeallocate(1, addr);
     if (current_thread->call_back_result != -1) {
         MachineResumeSignals(sigstate);
+        // printf("done writing\n");
         return VM_STATUS_SUCCESS;
     }
     else {
@@ -512,11 +526,47 @@ TVMStatus VMFileRead(int filedescriptor, void *data, int *length) {
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
     void* addr;
-    VMMemoryPoolAllocate(1, (TVMMemorySize)(*length), &addr);
+
+
+
+
+
+
+    if (*length > 512) {
+        VMMemoryPoolAllocate(1, 512, &addr);
+    }
+    else {
+        VMMemoryPoolAllocate(1, (TVMMemorySize)(*length), &addr);    
+    } 
     current_thread->thread_state = VM_THREAD_STATE_WAITING;
-    MachineFileRead(filedescriptor, data, *length, MachineFileCallback, current_thread);
+    int temp_length = *length;
+    while (temp_length > 0) {
+        if (temp_length > 512) {
+            MachineFileRead(filedescriptor, addr, 512, MachineFileCallback, current_thread);
+            memcpy(data, addr, 512);
+        }
+        else {
+            MachineFileRead(filedescriptor, addr, temp_length, MachineFileCallback, current_thread);
+            memcpy(data, addr, temp_length);        }
+        temp_length -= 512;
+        data += 512;
+        // printf("%d\n", *length);
+    }
+
+
+
+
+
+
+
+
+
+
+    // VMMemoryPoolAllocate(1, (TVMMemorySize)(*length), &addr);
+    // current_thread->thread_state = VM_THREAD_STATE_WAITING;
+    // MachineFileRead(filedescriptor, addr, *length, MachineFileCallback, current_thread);
     scheduler();
-    memcpy(data, addr, *length);
+    // memcpy(data, addr, *length);
     VMMemoryPoolDeallocate(1, addr);
     *length = current_thread->call_back_result;
     if(*length > 0) {
@@ -671,8 +721,10 @@ TVMStatus VMMemoryPoolCreate(void *base, TVMMemorySize size, TVMMemoryPoolIDRef 
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
     else {
+        *memory = (TVMMemoryPoolID)mem_pool_vector.size();
         MemoryPool* new_mem_pool = new MemoryPool(size, *memory, (uint8_t*)base);
-        new_mem_pool->memory_pool_id = (TVMMemoryPoolID)mem_pool_vector.size();
+
+        // printf("mempool id: %d\n", new_mem_pool->memory_pool_id);
         mem_pool_vector.push_back(new_mem_pool);
         MachineResumeSignals(sigstate);
         return VM_STATUS_SUCCESS;
@@ -743,7 +795,7 @@ TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void 
                 }
             }
             new_chunk->base = (*it_free)->base;
-            // printf("allocated: %x\n", new_chunk->base);
+            // printf("new_chunk base: %p\n", new_chunk->base);
             *pointer = new_chunk->base;
             // insert new_chunk into correct spot
             mem_pool_vector[memory]->alloc_list.insert(it_alloc, new_chunk);
