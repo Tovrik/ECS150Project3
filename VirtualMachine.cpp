@@ -225,6 +225,44 @@ void release(TVMMutexID mutex, deque<TCB*> &Q) {
     }
 }
 
+void add_to_free_list(MemoryPool *actual_mem_pool, mem_chunk* free_mem_chunk) {
+    // find position to insert into free_list
+    list<mem_chunk*>::iterator it = actual_mem_pool->free_list.begin();
+    for (; it !=actual_mem_pool->free_list.end(); ++it) {
+        if((*it)->base >= free_mem_chunk->base) {
+            break;
+        }
+    }
+    actual_mem_pool->free_list.insert(it, free_mem_chunk);          // it = current. after insert it = next     _ v _   --> _ _ v _
+    // merge with chunk after in memory
+    if (it != actual_mem_pool->free_list.end()) {
+        --it;                                                       // it = current                             _ v _ _
+        if ((*it)->base + (*it)->length == (*(++it))->base) {       // it = current. after ++it, it = next      _ v _ _ --> _ _ v _
+            --it;                                                   // it = current                             _ v _ _
+            (*it)->length = (*it)->length + (*(++it))->length;      // it = current. after ++it, it = next      _ v _ _ --> _ _ v _
+            actual_mem_pool->free_list.erase(it);                   // it = next                                _ _ v
+            --it;                                                   // it = current                             _ v _
+        }
+    }
+    // need to decrement because end points to the "past-the-end" element
+    else {
+        --it;
+    }
+    // merge with chunk before in memory
+    if (it != actual_mem_pool->free_list.begin()) {
+        --it;                                                       // it = prev                                v _ _
+        if ((*it)->base + (*it)->length == (*(++it))->base) {       // it = prev. after ++it, it = current      v _ _   --> _ v _ 
+            --it;                                                   // it = prev.                               v _ _
+            // printf("%x %x\n", (*it)->base, (*it)->length);
+            (*it)->length = (*it)->length + (*(++it))->length;      // it = prev. after ++it, it = current      v _ _   --> _ v _ 
+            actual_mem_pool->free_list.erase(it);                   // it = next                                _ v
+            // it--;
+            // printf("%x %x\n", (*it)->base, (*it)->length);
+        }
+    }
+    // printf("%d\n", actual_mem_pool->free_list.size());
+}
+
 ///////////////////////// Callbacks ///////////////////////////
 // for ref: typedef void (*TMachineAlarmCallback)(void *calldata);
 void timerDecrement(void *calldata) {
@@ -489,16 +527,18 @@ TVMStatus VMFileWrite(int filedescriptor, void *data, int *length) {
         if (temp_length > 512) {
             memcpy(addr, data, 512);
             MachineFileWrite(filedescriptor, addr, 512, MachineFileCallback, current_thread);
+            scheduler();
         }
         else {
             memcpy(addr, data, temp_length);
             MachineFileWrite(filedescriptor, addr, temp_length, MachineFileCallback, current_thread);
+            scheduler();
+
         }
         temp_length -= 512;
         data += 512;
-        // printf("%d\n", *length);
     }
-    scheduler();
+    
     // TVMStatus VMMemoryPoolDeallocate(TVMMemoryPoolID memory, void *pointer) {
     VMMemoryPoolDeallocate(1, addr);
     if (current_thread->call_back_result != -1) {
@@ -526,12 +566,6 @@ TVMStatus VMFileRead(int filedescriptor, void *data, int *length) {
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
     void* addr;
-
-
-
-
-
-
     if (*length > 512) {
         VMMemoryPoolAllocate(1, 512, &addr);
     }
@@ -540,35 +574,29 @@ TVMStatus VMFileRead(int filedescriptor, void *data, int *length) {
     } 
     current_thread->thread_state = VM_THREAD_STATE_WAITING;
     int temp_length = *length;
+    *length = 0;
     while (temp_length > 0) {
         if (temp_length > 512) {
             MachineFileRead(filedescriptor, addr, 512, MachineFileCallback, current_thread);
+            scheduler();
             memcpy(data, addr, 512);
+            *length += current_thread->call_back_result;
         }
         else {
             MachineFileRead(filedescriptor, addr, temp_length, MachineFileCallback, current_thread);
-            memcpy(data, addr, temp_length);        }
+            scheduler();
+            memcpy(data, addr, temp_length);  
+            *length += current_thread->call_back_result;     
+        }
         temp_length -= 512;
         data += 512;
         // printf("%d\n", *length);
     }
-
-
-
-
-
-
-
-
-
-
     // VMMemoryPoolAllocate(1, (TVMMemorySize)(*length), &addr);
     // current_thread->thread_state = VM_THREAD_STATE_WAITING;
     // MachineFileRead(filedescriptor, addr, *length, MachineFileCallback, current_thread);
-    scheduler();
     // memcpy(data, addr, *length);
     VMMemoryPoolDeallocate(1, addr);
-    *length = current_thread->call_back_result;
     if(*length > 0) {
         MachineResumeSignals(sigstate);
         return VM_STATUS_SUCCESS;
@@ -818,52 +846,6 @@ TVMStatus VMMemoryPoolAllocate(TVMMemoryPoolID memory, TVMMemorySize size, void 
         }
     }
 }
-
-void add_to_free_list(MemoryPool *actual_mem_pool, mem_chunk* free_mem_chunk) {
-    // if free_list is empty, then just put the chunk in and no need to check if it should merge with other chunks
-    // if (actual_mem_pool->free_list.empty()) {
-    //     // printf("free list is empty\n");
-    //     actual_mem_pool->free_list.push_back(free_mem_chunk);
-    //     printf("%d\n", actual_mem_pool->free_list.size());
-    //     return;
-    // }
-    // find position to insert into free_list
-    list<mem_chunk*>::iterator it = actual_mem_pool->free_list.begin();
-    for (; it !=actual_mem_pool->free_list.end(); ++it) {
-        if((*it)->base >= free_mem_chunk->base) {
-            break;
-        }
-    }
-    actual_mem_pool->free_list.insert(it, free_mem_chunk);          // it = current. after insert it = next     _ v _   --> _ _ v _
-    // merge with chunk after in memory
-    if (it != actual_mem_pool->free_list.end()) {
-        --it;                                                       // it = current                             _ v _ _
-        if ((*it)->base + (*it)->length == (*(++it))->base) {       // it = current. after ++it, it = next      _ v _ _ --> _ _ v _
-            --it;                                                   // it = current                             _ v _ _
-            (*it)->length = (*it)->length + (*(++it))->length;      // it = current. after ++it, it = next      _ v _ _ --> _ _ v _
-            actual_mem_pool->free_list.erase(it);                   // it = next                                _ _ v
-            --it;                                                   // it = current                             _ v _
-        }
-    }
-    // need to decrement because end points to the "past-the-end" element
-    else {
-        --it;
-    }
-    // merge with chunk before in memory
-    if (it != actual_mem_pool->free_list.begin()) {
-        --it;                                                       // it = prev                                v _ _
-        if ((*it)->base + (*it)->length == (*(++it))->base) {       // it = prev. after ++it, it = current      v _ _   --> _ v _ 
-            --it;                                                   // it = prev.                               v _ _
-            // printf("%x %x\n", (*it)->base, (*it)->length);
-            (*it)->length = (*it)->length + (*(++it))->length;      // it = prev. after ++it, it = current      v _ _   --> _ v _ 
-            actual_mem_pool->free_list.erase(it);                   // it = next                                _ v
-            // it--;
-            // printf("%x %x\n", (*it)->base, (*it)->length);
-        }
-    }
-    // printf("%d\n", actual_mem_pool->free_list.size());
-}
-
 
 TVMStatus VMMemoryPoolDeallocate(TVMMemoryPoolID memory, void *pointer) {
     MachineSuspendSignals(sigstate);
